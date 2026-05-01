@@ -1,0 +1,12 @@
+.git
+.gitignore
+.cursor
+.devcontainer
+bin
+dist
+tmp
+*.log
+README.md
+Requirement.md
+k8s
+deploy

@@ -1,0 +1,16 @@
+{
+  "name": "Telemetry Streamer Dev Container",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "telemetry-csv-streamer",
+  "workspaceFolder": "/workspace",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  },
+  "remoteUser": "root",
+  "postCreateCommand": "go mod tidy"
+}

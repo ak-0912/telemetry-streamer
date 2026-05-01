@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package telemetry.v1;
+
+option go_package = "telemetry-streamer/api;telemetryv1";
+
+message TelemetryMessage {
+  string metric_name = 1;
+  string gpu_id = 2;
+  string device = 3;
+  string uuid = 4;
+  string model_name = 5;
+  string host_name = 6;
+  double value = 7;
+  string labels_raw = 8;
+  int64 processed_at_unix_nano = 9;
+}

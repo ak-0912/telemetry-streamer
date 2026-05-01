@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "telemetry-streamer.fullname" . }}
+  labels:
+    {{- include "telemetry-streamer.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "telemetry-streamer.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "telemetry-streamer.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: telemetry-streamer
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: PROBE_ADDR
+              value: {{ .Values.env.probeAddr | quote }}
+            - name: STREAM_WORKERS
+              value: {{ .Values.env.streamWorkers | quote }}
+            - name: STREAM_INTERVAL_MS
+              value: {{ .Values.env.streamIntervalMs | quote }}
+            - name: QUEUE_SERVICE_URL
+              value: {{ .Values.env.queueServiceURL | quote }}
+            - name: QUEUE_CAPACITY
+              value: {{ .Values.env.queueCapacity | quote }}
+            - name: QUEUE_HIGH_WATERMARK
+              value: {{ .Values.env.queueHighWatermark | quote }}
+            - name: QUEUE_CRITICAL_WATERMARK
+              value: {{ .Values.env.queueCriticalWatermark | quote }}
+            - name: QUEUE_CONSUME_DELAY_MS
+              value: {{ .Values.env.queueConsumeDelayMs | quote }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
