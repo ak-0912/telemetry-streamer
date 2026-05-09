@@ -33,6 +33,12 @@ spec:
               value: {{ .Values.env.streamIntervalMs | quote }}
             - name: QUEUE_SERVICE_URL
               value: {{ .Values.env.queueServiceURL | quote }}
+            - name: MQ_TOPIC
+              value: {{ .Values.env.mqTopic | quote }}
+            - name: MQ_KEY_STRATEGY
+              value: {{ .Values.env.mqKeyStrategy | quote }}
+            - name: MQ_KEY_STATIC
+              value: {{ .Values.env.mqKeyStatic | quote }}
             - name: QUEUE_CAPACITY
               value: {{ .Values.env.queueCapacity | quote }}
             - name: QUEUE_HIGH_WATERMARK

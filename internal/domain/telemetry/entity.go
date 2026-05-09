@@ -24,7 +24,8 @@ type Reading struct {
 	HostName   string
 	Value      float64
 	LabelsRaw  string
-	Timestamp  time.Time
+	// Timestamp is the instant this log was processed; it is the canonical telemetry time (not source-clock or CSV wall time).
+	Timestamp time.Time
 }
 
 // FromCSVRecord stamps processing time and converts into domain reading.

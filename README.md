@@ -18,15 +18,15 @@ Scalable service that reads GPU telemetry from CSV and reliably publishes teleme
 2. CSV adapter (`internal/adapters/outbound/csv/reader.go`) loads all rows once.
 3. Reader emits rows in an infinite loop (wraps to index `0` at EOF).
 4. Each row is converted into a domain `Reading` with processing-time timestamp (`time.Now().UTC()`).
-5. Use case validates and publishes telemetry over Connect RPC (`enqueue` endpoint) after adaptive delay.
-6. External custom queue service accepts RPC requests and returns queue health signals.
+5. Use case validates and publishes telemetry over **gRPC** (`mq.v1.MessageQueueService/Publish`) after adaptive delay.
+6. The MQ has no health RPC; the publisher synthesizes **virtual queue depth** from publish outcomes for adaptive throttling (see `QUEUE_CAPACITY` / `QUEUE_CONSUME_DELAY_MS`).
 
 ### Services and responsibilities
 
 - Producer service: `cmd/telemetry-streamer`
   - reads CSV loop
-  - converts telemetry into protobuf messages (`structpb.Struct`)
-  - sends through Connect RPC client to queue service
+  - converts telemetry into protobuf `TelemetryMessage` (`api/telemetry.pb.go`)
+  - sends through **`google.golang.org/grpc`** using `mq.v1.MessageQueueServiceClient`
 - DI layer:
   - telemetry producer is composed with Uber Fx providers + lifecycle hooks
 
@@ -47,11 +47,11 @@ Scalable service that reads GPU telemetry from CSV and reliably publishes teleme
   - metric value (`double value`)
   - raw labels (`labels_raw`)
   - processing timestamp (`processed_at_unix_nano`)
-- Producer sends protobuf payload using Connect RPC.
+- Producer sends **`telemetry.v1.TelemetryMessage`** bytes as `mq.v1.PublishRequest.payload` using `api/mq/v1/message_queue.proto`.
 
 ### Backpressure handling
 
-- Queue health is monitored via queue `Health` RPC (`depth`, `capacity`, `utilization`).
+- Queue pressure for throttling uses **synthetic** `depth` / `capacity` / `utilization` derived locally (aligned with `QUEUE_CAPACITY` and publish pacing).
 - Adaptive throttling behavior:
   - low utilization: base stream interval
   - medium/high utilization: interval multiplier (2x/4x/8x)
@@ -81,12 +81,38 @@ Scalable service that reads GPU telemetry from CSV and reliably publishes teleme
 go run ./cmd/telemetry-streamer
 ```
 
+### MQ over gRPC (env)
+
+When the MQ listens on gRPC, set **`QUEUE_BACKEND=grpc`** and **`MQ_GRPC_ADDR`** (host:port or full `grpc://` / `grpcs://` URL). That **overrides** `QUEUE_SERVICE_URL` for the dial target used by the publisher.
+
+```bash
+export QUEUE_BACKEND=grpc
+export MQ_GRPC_ADDR=host.docker.internal:50051   # or telemetry-message-queue:50051 in compose/k8s
+export MQ_TOPIC=gpu-telemetry
+make run
+```
+
+### CSV streamer CLI (flags → same env)
+
+`cmd/csv-streamer` is the same Fx app; flags set env before startup:
+
+```bash
+make run-csv-streamer ARGS='-addr telemetry-message-queue:50051 -csv /workspaces/<repo>/dcgm_metrics_20250718_134233.csv -topic gpu-telemetry'
+```
+
+Equivalent to the env block above plus `CSV_PATH` / `MQ_TOPIC`.
+
 ## Config (env vars)
 
 - `CSV_PATH` (default: `dcgm_metrics_20250718_134233.csv`)
 - `STREAM_INTERVAL_MS` (default: `50`)
 - `PROBE_ADDR` (default: `:8080`)
-- `QUEUE_SERVICE_URL` (default: `http://127.0.0.1:8081`)
+- `QUEUE_BACKEND` (optional) — set to `grpc` with `MQ_GRPC_ADDR` to derive the gRPC dial URL
+- `MQ_GRPC_ADDR` (optional) — e.g. `host.docker.internal:50051` or `grpc://telemetry-message-queue:50051`; used when `QUEUE_BACKEND=grpc`
+- `QUEUE_SERVICE_URL` (default: `http://127.0.0.1:8081`; also supports `grpc://`, `grpcs://`, `https://`, or plain `host:port`) — ignored for dial when `QUEUE_BACKEND=grpc` and `MQ_GRPC_ADDR` are set
+- `MQ_TOPIC` (default: `telemetry`) — `PublishRequest.topic`
+- `MQ_KEY_STRATEGY` (default: `gpu_id`) — one of: `static`, `gpu_id`, `metric_name`, `metric_gpu`, `uuid`
+- `MQ_KEY_STATIC` (default: empty) — key when `MQ_KEY_STRATEGY=static`; if empty, key falls back to `MQ_TOPIC`
 - `QUEUE_CAPACITY` (default: `1024`)
 - `QUEUE_HIGH_WATERMARK` (default: `0.80`)
 - `QUEUE_CRITICAL_WATERMARK` (default: `0.95`)
@@ -96,6 +122,14 @@ go run ./cmd/telemetry-streamer
 ## Message Schema
 
 Protocol Buffer schema is defined in `api/telemetry.proto`.
+
+Regenerate Go types from the schema (requires network on first run to fetch `buf` and remote plugins):
+
+```bash
+make proto
+```
+
+This writes `api/telemetry.pb.go` and `api/mq/v1/message_queue.pb.go` plus `api/mq/v1/message_queue_grpc.pb.go` using `buf.yaml` and `buf.gen.yaml`.
 
 ## Local verification
 
@@ -133,16 +167,22 @@ helm template telemetry-streamer ./deploy/helm/telemetry-streamer
 
 ## Local queue stub (for integration without real queue)
 
-Run a minimal Connect-compatible queue stub:
+Run a minimal **gRPC** implementation of `mq.v1.MessageQueueService` (stub implements `Publish`):
 
 ```bash
 go run ./cmd/queue-stub
 ```
 
-Then run streamer against it:
+Then run streamer against it (insecure gRPC; `http://` is accepted and dialled as plaintext gRPC):
 
 ```bash
 QUEUE_SERVICE_URL=http://127.0.0.1:8081 go run ./cmd/telemetry-streamer
+```
+
+Or explicitly:
+
+```bash
+QUEUE_SERVICE_URL=grpc://127.0.0.1:8081 go run ./cmd/telemetry-streamer
 ```
 
 Stub env vars:

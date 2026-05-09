@@ -4,7 +4,7 @@ import (
 	"context"
 	"log"
 	"math/rand"
-	"net/http"
+	"net"
 	"os"
 	"os/signal"
 	"strconv"
@@ -12,14 +12,11 @@ import (
 	"syscall"
 	"time"
 
-	"connectrpc.com/connect"
-	"google.golang.org/protobuf/types/known/emptypb"
-	"google.golang.org/protobuf/types/known/structpb"
-)
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
-const (
-	enqueueProcedure = "/telemetry.v1.QueueService/Enqueue"
-	healthProcedure  = "/telemetry.v1.QueueService/Health"
+	mqv1 "telemetry-streamer/api/mq/v1"
 )
 
 type stubQueue struct {
@@ -28,6 +25,23 @@ type stubQueue struct {
 	capacity          int
 	rejectUtilization float64
 	failEnqueuePct    int
+}
+
+type mqImpl struct {
+	mqv1.UnimplementedMessageQueueServiceServer
+	q *stubQueue
+}
+
+func (s *mqImpl) Publish(_ context.Context, in *mqv1.PublishRequest) (*mqv1.PublishResponse, error) {
+	_ = in.GetTopic()
+	_ = in.GetKey()
+	_ = in.GetPayload()
+
+	accepted, depth, util := s.q.enqueue()
+	if !accepted {
+		return nil, status.Errorf(codes.ResourceExhausted, "queue overloaded util=%.3f", util)
+	}
+	return &mqv1.PublishResponse{Partition: 0, Offset: int64(depth)}, nil
 }
 
 func main() {
@@ -55,57 +69,21 @@ func main() {
 		failEnqueuePct:    failPct,
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle(enqueueProcedure, connect.NewUnaryHandler(
-		enqueueProcedure,
-		func(ctx context.Context, req *connect.Request[structpb.Struct]) (*connect.Response[structpb.Struct], error) {
-			_ = ctx
-			_ = req
-			accepted, depth, util := q.enqueue()
-			resp, err := structpb.NewStruct(map[string]any{
-				"accepted":    accepted,
-				"depth":       float64(depth),
-				"capacity":    float64(q.capacity),
-				"utilization": util,
-			})
-			if err != nil {
-				return nil, connect.NewError(connect.CodeInternal, err)
-			}
-			return connect.NewResponse(resp), nil
-		},
-	))
-	mux.Handle(healthProcedure, connect.NewUnaryHandler(
-		healthProcedure,
-		func(ctx context.Context, req *connect.Request[emptypb.Empty]) (*connect.Response[structpb.Struct], error) {
-			_ = ctx
-			_ = req
-			depth, util := q.health()
-			resp, err := structpb.NewStruct(map[string]any{
-				"depth":       float64(depth),
-				"capacity":    float64(q.capacity),
-				"utilization": util,
-			})
-			if err != nil {
-				return nil, connect.NewError(connect.CodeInternal, err)
-			}
-			return connect.NewResponse(resp), nil
-		},
-	))
-
-	server := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 2 * time.Second,
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("listen: %v", err)
 	}
+
+	grpcSrv := grpc.NewServer()
+	mqv1.RegisterMessageQueueServiceServer(grpcSrv, &mqImpl{q: q})
 
 	stopDrain := make(chan struct{})
 	go q.runDrainLoop(stopDrain, consumeEvery)
 
 	go func() {
-		log.Printf("queue-stub listening on %s", addr)
-		log.Printf("enqueue=%s health=%s", enqueueProcedure, healthProcedure)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("queue-stub server error: %v", err)
+		log.Printf("queue-stub gRPC mq.v1.MessageQueueService listening on %s", lis.Addr().String())
+		if err := grpcSrv.Serve(lis); err != nil {
+			log.Printf("grpc server stopped: %v", err)
 		}
 	}()
 
@@ -114,11 +92,7 @@ func main() {
 	<-sigCh
 
 	close(stopDrain)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("queue-stub shutdown error: %v", err)
-	}
+	grpcSrv.GracefulStop()
 }
 
 func (q *stubQueue) enqueue() (accepted bool, depth int, util float64) {
@@ -135,12 +109,6 @@ func (q *stubQueue) enqueue() (accepted bool, depth int, util float64) {
 	q.depth++
 	util = q.utilizationLocked()
 	return true, q.depth, util
-}
-
-func (q *stubQueue) health() (depth int, util float64) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return q.depth, q.utilizationLocked()
 }
 
 func (q *stubQueue) runDrainLoop(stop <-chan struct{}, every time.Duration) {

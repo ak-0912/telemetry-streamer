@@ -2,53 +2,79 @@ package queue
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
+	"net"
+	"strings"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-	"google.golang.org/protobuf/types/known/emptypb"
-	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	mqv1 "telemetry-streamer/api/mq/v1"
 	"telemetry-streamer/internal/domain/telemetry"
 )
+
+type testMQ struct {
+	mqv1.UnimplementedMessageQueueServiceServer
+	publish func(context.Context, *mqv1.PublishRequest) (*mqv1.PublishResponse, error)
+}
+
+func (s *testMQ) Publish(ctx context.Context, in *mqv1.PublishRequest) (*mqv1.PublishResponse, error) {
+	if s.publish != nil {
+		return s.publish(ctx, in)
+	}
+	return &mqv1.PublishResponse{Partition: 0, Offset: 1}, nil
+}
+
+func startTestMQGRPCServer(t *testing.T, impl mqv1.MessageQueueServiceServer) string {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := grpc.NewServer()
+	mqv1.RegisterMessageQueueServiceServer(srv, impl)
+	go func() {
+		if err := srv.Serve(lis); err != nil {
+			t.Logf("grpc serve: %v", err)
+		}
+	}()
+	t.Cleanup(func() { srv.Stop() })
+	return "grpc://" + lis.Addr().String()
+}
+
+func newTestPublisher(t *testing.T, url string) *Publisher {
+	t.Helper()
+	p, err := NewPublisher(url, "telemetry", "gpu_id", "", 10, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("new publisher: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	return p
+}
 
 func TestPublisherPublishAndHealth(t *testing.T) {
 	t.Parallel()
 
-	mux := http.NewServeMux()
-	mux.Handle(EnqueueProcedure, connect.NewUnaryHandler(
-		EnqueueProcedure,
-		func(context.Context, *connect.Request[structpb.Struct]) (*connect.Response[structpb.Struct], error) {
-			msg, err := structpb.NewStruct(map[string]any{"accepted": true})
-			if err != nil {
-				return nil, err
+	addr := startTestMQGRPCServer(t, &testMQ{
+		publish: func(_ context.Context, in *mqv1.PublishRequest) (*mqv1.PublishResponse, error) {
+			if in.GetTopic() != "telemetry" {
+				t.Fatalf("topic: %q", in.GetTopic())
 			}
-			return connect.NewResponse(msg), nil
-		},
-	))
-	mux.Handle(HealthProcedure, connect.NewUnaryHandler(
-		HealthProcedure,
-		func(context.Context, *connect.Request[emptypb.Empty]) (*connect.Response[structpb.Struct], error) {
-			msg, err := structpb.NewStruct(map[string]any{
-				"depth":       4,
-				"capacity":    10,
-				"utilization": 0.4,
-			})
-			if err != nil {
-				return nil, err
+			if in.GetKey() != "0" {
+				t.Fatalf("key: %q", in.GetKey())
 			}
-			return connect.NewResponse(msg), nil
+			if len(in.GetPayload()) == 0 {
+				t.Fatal("expected non-empty payload")
+			}
+			return &mqv1.PublishResponse{Partition: 0, Offset: 42}, nil
 		},
-	))
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	})
 
-	p, err := NewPublisher(srv.URL)
-	if err != nil {
-		t.Fatalf("new publisher: %v", err)
-	}
-	err = p.Publish(context.Background(), telemetry.Reading{
+	p := newTestPublisher(t, addr)
+
+	err := p.Publish(context.Background(), telemetry.Reading{
 		MetricName: "DCGM_FI_DEV_GPU_UTIL",
 		GPUId:      "0",
 		Device:     "nvidia0",
@@ -63,54 +89,31 @@ func TestPublisherPublishAndHealth(t *testing.T) {
 		t.Fatalf("publish failed: %v", err)
 	}
 
-	health := p.Health(context.Background())
-	if health.Depth != 4 || health.Capacity != 10 {
-		t.Fatalf("unexpected health values: %+v", health)
+	h := p.Health(context.Background())
+	if h.Capacity != 10 {
+		t.Fatalf("capacity: %d", h.Capacity)
 	}
-	if health.Utilization != 0.4 {
-		t.Fatalf("unexpected utilization: %v", health.Utilization)
+	if h.Utilization < 0 || h.Utilization > 1 {
+		t.Fatalf("utilization: %v", h.Utilization)
 	}
 }
 
-func TestPublisherRejectResponse(t *testing.T) {
+func TestPublisherRejectResourceExhausted(t *testing.T) {
 	t.Parallel()
 
-	mux := http.NewServeMux()
-	mux.Handle(EnqueueProcedure, connect.NewUnaryHandler(
-		EnqueueProcedure,
-		func(context.Context, *connect.Request[structpb.Struct]) (*connect.Response[structpb.Struct], error) {
-			msg, err := structpb.NewStruct(map[string]any{"accepted": false})
-			if err != nil {
-				return nil, err
-			}
-			return connect.NewResponse(msg), nil
+	addr := startTestMQGRPCServer(t, &testMQ{
+		publish: func(context.Context, *mqv1.PublishRequest) (*mqv1.PublishResponse, error) {
+			return nil, status.Error(codes.ResourceExhausted, "overload")
 		},
-	))
-	mux.Handle(HealthProcedure, connect.NewUnaryHandler(
-		HealthProcedure,
-		func(context.Context, *connect.Request[emptypb.Empty]) (*connect.Response[structpb.Struct], error) {
-			msg, err := structpb.NewStruct(map[string]any{})
-			if err != nil {
-				return nil, err
-			}
-			return connect.NewResponse(msg), nil
-		},
-	))
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	})
 
-	p, err := NewPublisher(srv.URL)
-	if err != nil {
-		t.Fatalf("new publisher: %v", err)
-	}
-	err = p.Publish(context.Background(), telemetry.Reading{
+	p := newTestPublisher(t, addr)
+
+	err := p.Publish(context.Background(), telemetry.Reading{
 		MetricName: "metric",
 		GPUId:      "0",
 		Timestamp:  time.Now(),
 	})
-	if err == nil {
-		t.Fatal("expected queue rejection error")
-	}
 	if err != ErrRejectedByQueue {
 		t.Fatalf("expected ErrRejectedByQueue, got: %v", err)
 	}
@@ -119,45 +122,87 @@ func TestPublisherRejectResponse(t *testing.T) {
 func TestNewPublisherInvalidURL(t *testing.T) {
 	t.Parallel()
 
-	if _, err := NewPublisher("://bad-url"); err == nil {
+	if _, err := NewPublisher("://bad-url", "t", "gpu_id", "", 10, time.Millisecond); err == nil {
 		t.Fatal("expected invalid URL error")
 	}
 }
 
-func TestPublisherMalformedResponse(t *testing.T) {
+func TestParseQueueTargetHTTPAndHostPort(t *testing.T) {
 	t.Parallel()
 
-	mux := http.NewServeMux()
-	mux.Handle(EnqueueProcedure, connect.NewUnaryHandler(
-		EnqueueProcedure,
-		func(context.Context, *connect.Request[structpb.Struct]) (*connect.Response[structpb.Struct], error) {
-			msg, err := structpb.NewStruct(map[string]any{}) // missing accepted
-			if err != nil {
-				return nil, err
-			}
-			return connect.NewResponse(msg), nil
-		},
-	))
-	mux.Handle(HealthProcedure, connect.NewUnaryHandler(
-		HealthProcedure,
-		func(context.Context, *connect.Request[emptypb.Empty]) (*connect.Response[structpb.Struct], error) {
-			msg, _ := structpb.NewStruct(map[string]any{})
-			return connect.NewResponse(msg), nil
-		},
-	))
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	target, creds, err := parseQueueTarget("http://127.0.0.1:9999")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if target != "127.0.0.1:9999" || creds == nil {
+		t.Fatalf("unexpected target=%q creds=%v", target, creds)
+	}
 
-	p, err := NewPublisher(srv.URL)
+	target2, creds2, err := parseQueueTarget("127.0.0.1:1234")
+	if err != nil {
+		t.Fatalf("parse host:port: %v", err)
+	}
+	if target2 != "127.0.0.1:1234" || creds2 == nil {
+		t.Fatalf("unexpected target=%q", target2)
+	}
+}
+
+func TestNewPublisherHostPortWithoutScheme(t *testing.T) {
+	t.Parallel()
+
+	addr := startTestMQGRPCServer(t, &testMQ{
+		publish: func(context.Context, *mqv1.PublishRequest) (*mqv1.PublishResponse, error) {
+			return &mqv1.PublishResponse{}, nil
+		},
+	})
+	hostPort := strings.TrimPrefix(strings.TrimPrefix(addr, "grpc://"), "http://")
+
+	p, err := NewPublisher(hostPort, "telemetry", "gpu_id", "", 10, time.Millisecond)
 	if err != nil {
 		t.Fatalf("new publisher: %v", err)
 	}
-	err = p.Publish(context.Background(), telemetry.Reading{
-		MetricName: "metric",
+	defer func() { _ = p.Close() }()
+
+	if err := p.Publish(context.Background(), telemetry.Reading{
+		MetricName: "m",
 		GPUId:      "0",
 		Timestamp:  time.Now(),
-	})
-	if err == nil {
-		t.Fatal("expected malformed response error")
+	}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+}
+
+func TestMessageKeyStrategies(t *testing.T) {
+	t.Parallel()
+
+	r := telemetry.Reading{
+		MetricName: "util",
+		GPUId:      "7",
+		UUID:       "abc-uuid",
+		Timestamp:  time.Now(),
+	}
+
+	tests := []struct {
+		strategy string
+		static   string
+		wantKey  string
+	}{
+		{"gpu_id", "", "7"},
+		{"metric_name", "", "util"},
+		{"metric_gpu", "", "util:7"},
+		{"uuid", "", "abc-uuid"},
+		{"static", "fixed-key", "fixed-key"},
+		{"static", "", "mytopic"},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.strategy, func(t *testing.T) {
+			t.Parallel()
+			p := &Publisher{topic: "mytopic", keyStrategy: tc.strategy, keyStatic: tc.static}
+			if got := p.messageKey(r); got != tc.wantKey {
+				t.Fatalf("key got=%q want=%q", got, tc.wantKey)
+			}
+		})
 	}
 }

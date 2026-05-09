@@ -32,6 +32,8 @@ func NewReader(filePath string) (*Reader, error) {
 	}()
 
 	parser := csv.NewReader(file)
+	parser.LazyQuotes = true
+	parser.FieldsPerRecord = -1
 
 	header, err := parser.Read()
 	if err != nil {
@@ -62,13 +64,14 @@ func NewReader(filePath string) (*Reader, error) {
 
 		record, parseErr := parseRow(row, indexByName)
 		if parseErr != nil {
-			return nil, parseErr
+			log.Printf("csv skip row: %v", parseErr)
+			continue
 		}
 		records = append(records, record)
 	}
 
 	if len(records) == 0 {
-		return nil, errEmptyCSV
+		return nil, fmt.Errorf("%w: no valid data rows after parsing (check value column and quoting)", errEmptyCSV)
 	}
 
 	log.Printf("csv reader initialized: path=%s records=%d", filePath, len(records))
@@ -115,6 +118,16 @@ func (r *Reader) Read(ctx context.Context) (<-chan telemetry.Reading, <-chan err
 	return out, errs
 }
 
+// normalizeFloatString trims spaces and a single pair of ASCII double quotes often
+// added by spreadsheet/CSV exporters around numeric cells.
+func normalizeFloatString(s string) string {
+	s = strings.TrimSpace(s)
+	for len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		s = strings.TrimSpace(s[1 : len(s)-1])
+	}
+	return strings.TrimSpace(s)
+}
+
 func parseRow(row []string, indexes map[string]int) (telemetry.CSVRecord, error) {
 	get := func(key string) string {
 		idx := indexes[key]
@@ -125,9 +138,13 @@ func parseRow(row []string, indexes map[string]int) (telemetry.CSVRecord, error)
 	}
 
 	parseFloat := func(name, value string) (float64, error) {
-		number, err := strconv.ParseFloat(value, 64)
+		normalized := normalizeFloatString(value)
+		if normalized == "" {
+			return 0, fmt.Errorf("parse %s: empty value (row may be missing columns so value shifted into labels)", name)
+		}
+		number, err := strconv.ParseFloat(normalized, 64)
 		if err != nil {
-			return 0, fmt.Errorf("parse %s=%q: %w", name, value, err)
+			return 0, fmt.Errorf("csv %s: invalid numeric %q: %w", name, normalized, err)
 		}
 		return number, nil
 	}

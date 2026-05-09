@@ -13,7 +13,14 @@ func provideReader(cfg config.Config) (outbound.TelemetryReader, error) {
 }
 
 func provideQueuePublisher(cfg config.Config) (*queueadapter.Publisher, error) {
-	return queueadapter.NewPublisher(cfg.QueueServiceURL)
+	return queueadapter.NewPublisher(
+		cfg.QueueServiceURL,
+		cfg.MQTopic,
+		cfg.MQKeyStrategy,
+		cfg.MQKeyStatic,
+		cfg.QueueCapacity,
+		cfg.QueueConsumeDelay,
+	)
 }
 
 func provideMessagePublisher(p *queueadapter.Publisher) outbound.MessagePublisher {
