@@ -159,12 +159,12 @@ docker build -t telemetry-streamer:latest .
 
 ## Kubernetes deployment with Helm
 
-Chart location: `deploy/helm/telemetry-streamer`
+Chart location: `helm/`
 
 Install/upgrade:
 
 ```bash
-helm upgrade --install telemetry-streamer ./deploy/helm/telemetry-streamer \
+helm upgrade --install telemetry-streamer ./helm \
   --namespace telemetry --create-namespace \
   --set image.repository=your-registry/telemetry-streamer \
   --set image.tag=latest
@@ -173,7 +173,7 @@ helm upgrade --install telemetry-streamer ./deploy/helm/telemetry-streamer \
 Render manifests only (dry check):
 
 ```bash
-helm template telemetry-streamer ./deploy/helm/telemetry-streamer
+helm template telemetry-streamer ./helm
 ```
 
 ## Local queue stub (for integration without real queue)
