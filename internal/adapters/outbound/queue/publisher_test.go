@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -46,7 +47,13 @@ func startTestMQGRPCServer(t *testing.T, impl mqv1.MessageQueueServiceServer) st
 
 func newTestPublisher(t *testing.T, url string) *Publisher {
 	t.Helper()
-	p, err := NewPublisher(url, "telemetry", "gpu_id", "", 10, 50*time.Millisecond)
+	p, err := NewPublisher(PublisherConfig{
+		QueueServiceURL: url,
+		Topic:           "telemetry",
+		KeyStrategy:     "gpu_id",
+		Capacity:        10,
+		DrainInterval:   50 * time.Millisecond,
+	})
 	if err != nil {
 		t.Fatalf("new publisher: %v", err)
 	}
@@ -76,11 +83,11 @@ func TestPublisherPublishAndHealth(t *testing.T) {
 
 	err := p.Publish(context.Background(), telemetry.Reading{
 		MetricName: "DCGM_FI_DEV_GPU_UTIL",
-		GPUId:      "0",
+		GPUID:      "0",
 		Device:     "nvidia0",
 		UUID:       "uuid-0",
 		ModelName:  "H100",
-		HostName:   "host-a",
+		Hostname:   "host-a",
 		Value:      10,
 		LabelsRaw:  "gpu=0",
 		Timestamp:  time.Now(),
@@ -111,10 +118,10 @@ func TestPublisherRejectResourceExhausted(t *testing.T) {
 
 	err := p.Publish(context.Background(), telemetry.Reading{
 		MetricName: "metric",
-		GPUId:      "0",
+		GPUID:      "0",
 		Timestamp:  time.Now(),
 	})
-	if err != ErrRejectedByQueue {
+	if !errors.Is(err, ErrRejectedByQueue) {
 		t.Fatalf("expected ErrRejectedByQueue, got: %v", err)
 	}
 }
@@ -122,7 +129,7 @@ func TestPublisherRejectResourceExhausted(t *testing.T) {
 func TestNewPublisherInvalidURL(t *testing.T) {
 	t.Parallel()
 
-	if _, err := NewPublisher("://bad-url", "t", "gpu_id", "", 10, time.Millisecond); err == nil {
+	if _, err := NewPublisher(PublisherConfig{QueueServiceURL: "://bad-url", Topic: "t", KeyStrategy: "gpu_id", Capacity: 10, DrainInterval: time.Millisecond}); err == nil {
 		t.Fatal("expected invalid URL error")
 	}
 }
@@ -157,7 +164,7 @@ func TestNewPublisherHostPortWithoutScheme(t *testing.T) {
 	})
 	hostPort := strings.TrimPrefix(strings.TrimPrefix(addr, "grpc://"), "http://")
 
-	p, err := NewPublisher(hostPort, "telemetry", "gpu_id", "", 10, time.Millisecond)
+	p, err := NewPublisher(PublisherConfig{QueueServiceURL: hostPort, Topic: "telemetry", KeyStrategy: "gpu_id", Capacity: 10, DrainInterval: time.Millisecond})
 	if err != nil {
 		t.Fatalf("new publisher: %v", err)
 	}
@@ -165,7 +172,7 @@ func TestNewPublisherHostPortWithoutScheme(t *testing.T) {
 
 	if err := p.Publish(context.Background(), telemetry.Reading{
 		MetricName: "m",
-		GPUId:      "0",
+		GPUID:      "0",
 		Timestamp:  time.Now(),
 	}); err != nil {
 		t.Fatalf("publish: %v", err)
@@ -177,7 +184,7 @@ func TestMessageKeyStrategies(t *testing.T) {
 
 	r := telemetry.Reading{
 		MetricName: "util",
-		GPUId:      "7",
+		GPUID:      "7",
 		UUID:       "abc-uuid",
 		Timestamp:  time.Now(),
 	}

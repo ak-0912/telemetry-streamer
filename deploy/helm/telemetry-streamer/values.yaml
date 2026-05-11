@@ -1,5 +1,7 @@
 replicaCount: 1
 
+fullnameOverride: telemetry-streamer
+
 image:
   repository: telemetry-streamer
   tag: latest
@@ -26,15 +28,29 @@ autoscaling:
 env:
   probeAddr: ":8080"
   streamWorkers: "1"
+  shardTotal: "1"
+  shardIndex: "0"
   streamIntervalMs: "50"
-  mqTopic: "telemetry"
+  mqTopic: "gpu-telemetry"
   mqKeyStrategy: "gpu_id"
   mqKeyStatic: ""
-  queueServiceURL: "grpc://queue-service.default.svc.cluster.local:8081"
+  # gRPC address for MessageQueueService (must match your MQ Service name, namespace, and gRPC port).
+  queueServiceURL: "grpc://telemetry-message-queue.telemetry.svc.cluster.local:50051"
   queueCapacity: "1024"
   queueHighWatermark: "0.80"
   queueCriticalWatermark: "0.95"
   queueConsumeDelayMs: "75"
+  # Path inside the container when using the CSV baked into the image (Dockerfile ENV).
+  # When csv.enabled is true, CSV_PATH is instead mountPath/fileName on the PVC.
+  csvPath: "/app/dcgm_metrics_20250718_134233.csv"
+
+csv:
+  # When enabled, mount an existing PVC that contains the CSV file.
+  enabled: false
+  mountPath: /config/csv
+  fileName: dcgm_metrics_20250718_134233.csv
+  # Required when enabled=true.
+  existingPvc: ""
 
 probes:
   readiness:

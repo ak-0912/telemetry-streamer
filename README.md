@@ -6,7 +6,7 @@ Scalable service that reads GPU telemetry from CSV and reliably publishes teleme
 - `cmd/telemetry-streamer`: application entrypoint and dependency wiring
 - `internal/domain`: pure domain entities and business rules
 - `internal/application`: use-cases orchestrating domain + ports
-- `internal/ports`: inbound/outbound interfaces
+- `internal/ports`: outbound interfaces (reader, publisher, queue monitor)
 - `internal/adapters`: infrastructure implementations for ports (CSV, queue, etc.)
 - `internal/infrastructure`: config and setup concerns
 
@@ -87,20 +87,30 @@ When the MQ listens on gRPC, set **`QUEUE_BACKEND=grpc`** and **`MQ_GRPC_ADDR`**
 
 ```bash
 export QUEUE_BACKEND=grpc
-export MQ_GRPC_ADDR=host.docker.internal:50051   # or telemetry-message-queue:50051 in compose/k8s
+export MQ_GRPC_ADDR=host.docker.internal:50051   # from Linux Docker host → MQ often needs --add-host=host.docker.internal:host-gateway
 export MQ_TOPIC=gpu-telemetry
+# Consumer-side naming only — mq.v1 PublishRequest has topic/key/payload only.
+# Use the same value in telemetry collectors that call Fetch/JoinGroup/etc.
+export MQ_GROUP=telemetry-collector
+
 make run
 ```
 
-### CSV streamer CLI (flags → same env)
+If **`rpc error: code = Unavailable`**: MQ is not reachable at `MQ_GRPC_ADDR` from where the streamer runs (wrong hostname for Docker/K8s, MQ bound only to `127.0.0.1`, wrong port, or MQ process down). From **inside a Linux container**, `host.docker.internal` may be unset unless you add `--add-host=host.docker.internal:host-gateway` (Compose/K8s) or dial the MQ **service DNS name** and published port instead.
 
-`cmd/csv-streamer` is the same Fx app; flags set env before startup:
+### Optional CLI flags (`cmd/telemetry-streamer`)
+
+Before Fx starts, non-empty flags call `os.Setenv` for:
+
+- `-addr` → `QUEUE_BACKEND=grpc`, `MQ_GRPC_ADDR`
+- `-csv` → `CSV_PATH`
+- `-topic` → `MQ_TOPIC`
 
 ```bash
-make run-csv-streamer ARGS='-addr telemetry-message-queue:50051 -csv /workspaces/<repo>/dcgm_metrics_20250718_134233.csv -topic gpu-telemetry'
+make run ARGS='-addr host.docker.internal:50051 -csv /workspaces/<repo>/dcgm_metrics_20250718_134233.csv -topic gpu-telemetry'
 ```
 
-Equivalent to the env block above plus `CSV_PATH` / `MQ_TOPIC`.
+Set `export MQ_GROUP=telemetry-collector` separately if your tooling expects it (publish path ignores `MQ_GROUP`).
 
 ## Config (env vars)
 
@@ -111,6 +121,7 @@ Equivalent to the env block above plus `CSV_PATH` / `MQ_TOPIC`.
 - `MQ_GRPC_ADDR` (optional) — e.g. `host.docker.internal:50051` or `grpc://telemetry-message-queue:50051`; used when `QUEUE_BACKEND=grpc`
 - `QUEUE_SERVICE_URL` (default: `http://127.0.0.1:8081`; also supports `grpc://`, `grpcs://`, `https://`, or plain `host:port`) — ignored for dial when `QUEUE_BACKEND=grpc` and `MQ_GRPC_ADDR` are set
 - `MQ_TOPIC` (default: `telemetry`) — `PublishRequest.topic`
+- `MQ_GROUP` (optional, **not read by this repo**) — set only if your ops/collector stack expects it; consumer RPCs (`Fetch`, `JoinGroup`, …) use `group`; **`Publish` does not** send it
 - `MQ_KEY_STRATEGY` (default: `gpu_id`) — one of: `static`, `gpu_id`, `metric_name`, `metric_gpu`, `uuid`
 - `MQ_KEY_STATIC` (default: empty) — key when `MQ_KEY_STRATEGY=static`; if empty, key falls back to `MQ_TOPIC`
 - `QUEUE_CAPACITY` (default: `1024`)

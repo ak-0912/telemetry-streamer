@@ -29,6 +29,10 @@ spec:
               value: {{ .Values.env.probeAddr | quote }}
             - name: STREAM_WORKERS
               value: {{ .Values.env.streamWorkers | quote }}
+            - name: SHARD_TOTAL
+              value: {{ .Values.env.shardTotal | quote }}
+            - name: SHARD_INDEX
+              value: {{ .Values.env.shardIndex | quote }}
             - name: STREAM_INTERVAL_MS
               value: {{ .Values.env.streamIntervalMs | quote }}
             - name: QUEUE_SERVICE_URL
@@ -47,6 +51,14 @@ spec:
               value: {{ .Values.env.queueCriticalWatermark | quote }}
             - name: QUEUE_CONSUME_DELAY_MS
               value: {{ .Values.env.queueConsumeDelayMs | quote }}
+            - name: CSV_PATH
+              value: {{- if .Values.csv.enabled }} {{ printf "%s/%s" .Values.csv.mountPath .Values.csv.fileName | quote }}{{- else }} {{ .Values.env.csvPath | quote }}{{- end }}
+          {{- if .Values.csv.enabled }}
+          volumeMounts:
+            - name: csv-data
+              mountPath: {{ .Values.csv.mountPath | quote }}
+              readOnly: true
+          {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz
@@ -65,3 +77,10 @@ spec:
             failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.csv.enabled }}
+      volumes:
+        {{- $csvPVC := required "csv.existingPvc is required when csv.enabled=true" .Values.csv.existingPvc }}
+        - name: csv-data
+          persistentVolumeClaim:
+            claimName: {{ $csvPVC | quote }}
+      {{- end }}

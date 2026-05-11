@@ -1,8 +1,10 @@
+// Binary queue-stub is a lightweight in-memory gRPC message queue used for
+// local development and integration testing of the telemetry-streamer.
 package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"math/rand"
 	"net"
 	"os"
@@ -71,7 +73,8 @@ func main() {
 
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalf("listen: %v", err)
+		slog.Error("failed to listen", "addr", addr, "err", err)
+		os.Exit(1)
 	}
 
 	grpcSrv := grpc.NewServer()
@@ -81,9 +84,9 @@ func main() {
 	go q.runDrainLoop(stopDrain, consumeEvery)
 
 	go func() {
-		log.Printf("queue-stub gRPC mq.v1.MessageQueueService listening on %s", lis.Addr().String())
+		slog.Info("queue-stub listening", "addr", lis.Addr().String(), "service", "mq.v1.MessageQueueService")
 		if err := grpcSrv.Serve(lis); err != nil {
-			log.Printf("grpc server stopped: %v", err)
+			slog.Error("grpc server stopped", "err", err)
 		}
 	}()
 

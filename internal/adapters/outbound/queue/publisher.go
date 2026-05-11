@@ -23,7 +23,10 @@ import (
 	"telemetry-streamer/internal/ports/outbound"
 )
 
+// ErrRejectedByQueue indicates the MQ returned a transient rejection (e.g. ResourceExhausted, Unavailable).
 var ErrRejectedByQueue = errors.New("message rejected by queue service")
+
+// ErrInvalidQueueServiceURL indicates the configured MQ URL could not be parsed or has an unsupported scheme.
 var ErrInvalidQueueServiceURL = errors.New("invalid queue service url")
 
 // Publisher pushes telemetry to the message queue over gRPC (mq.v1.MessageQueueService.Publish).
@@ -46,24 +49,29 @@ type Publisher struct {
 	drainWG   sync.WaitGroup
 }
 
+// PublisherConfig holds all settings required to construct a Publisher.
+type PublisherConfig struct {
+	QueueServiceURL string        // gRPC dial target (e.g. "grpc://host:50051").
+	Topic           string        // MQ topic to publish to.
+	KeyStrategy     string        // Partition key strategy (static|gpu_id|metric_name|metric_gpu|uuid).
+	KeyStatic       string        // Static key value (used when KeyStrategy="static").
+	Capacity        int           // Virtual queue capacity for synthetic backpressure. Default: 1024.
+	DrainInterval   time.Duration // Tick interval for draining virtual depth. Default: 75ms.
+}
+
 // NewPublisher dials the MQ gRPC endpoint and configures Publish topic/key behavior.
-func NewPublisher(
-	queueServiceURL string,
-	mqTopic string,
-	mqKeyStrategy string,
-	mqKeyStatic string,
-	virtualCapacity int,
-	drainEvery time.Duration,
-) (*Publisher, error) {
-	target, creds, err := parseQueueTarget(queueServiceURL)
+func NewPublisher(cfg PublisherConfig) (*Publisher, error) {
+	target, creds, err := parseQueueTarget(cfg.QueueServiceURL)
 	if err != nil {
 		return nil, err
 	}
-	if virtualCapacity <= 0 {
-		virtualCapacity = 1024
+	capacity := cfg.Capacity
+	if capacity <= 0 {
+		capacity = 1024
 	}
-	if drainEvery <= 0 {
-		drainEvery = 75 * time.Millisecond
+	drainInterval := cfg.DrainInterval
+	if drainInterval <= 0 {
+		drainInterval = 75 * time.Millisecond
 	}
 
 	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(creds))
@@ -74,11 +82,11 @@ func NewPublisher(
 	p := &Publisher{
 		conn:        conn,
 		mqClient:    mqv1.NewMessageQueueServiceClient(conn),
-		topic:       strings.TrimSpace(mqTopic),
-		keyStrategy: strings.ToLower(strings.TrimSpace(mqKeyStrategy)),
-		keyStatic:   strings.TrimSpace(mqKeyStatic),
-		capacity:    virtualCapacity,
-		drainEvery:  drainEvery,
+		topic:       strings.TrimSpace(cfg.Topic),
+		keyStrategy: strings.ToLower(strings.TrimSpace(cfg.KeyStrategy)),
+		keyStatic:   strings.TrimSpace(cfg.KeyStatic),
+		capacity:    capacity,
+		drainEvery:  drainInterval,
 		stopDrain:   make(chan struct{}),
 	}
 	p.drainWG.Add(1)
@@ -123,6 +131,8 @@ func parseQueueTarget(raw string) (string, credentials.TransportCredentials, err
 		return "", nil, ErrInvalidQueueServiceURL
 	}
 
+	// Bare host:port (no scheme) is treated as plaintext gRPC for convenience
+	// in dev/test environments (e.g. "localhost:50051").
 	if !strings.Contains(raw, "://") {
 		return raw, insecure.NewCredentials(), nil
 	}
@@ -147,11 +157,11 @@ func parseQueueTarget(raw string) (string, credentials.TransportCredentials, err
 func readingToProto(r telemetry.Reading) *telemetryv1.TelemetryMessage {
 	return &telemetryv1.TelemetryMessage{
 		MetricName:          r.MetricName,
-		GpuId:               r.GPUId,
+		GpuId:               r.GPUID,
 		Device:              r.Device,
 		Uuid:                r.UUID,
 		ModelName:           r.ModelName,
-		HostName:            r.HostName,
+		HostName:            r.Hostname,
 		Value:               r.Value,
 		LabelsRaw:           r.LabelsRaw,
 		ProcessedAtUnixNano: r.Timestamp.UnixNano(),
@@ -166,15 +176,15 @@ func (p *Publisher) messageKey(r telemetry.Reading) string {
 		}
 		return p.topic
 	case "gpu_id":
-		return r.GPUId
+		return r.GPUID
 	case "metric_name":
 		return r.MetricName
 	case "metric_gpu":
-		return fmt.Sprintf("%s:%s", r.MetricName, r.GPUId)
+		return fmt.Sprintf("%s:%s", r.MetricName, r.GPUID)
 	case "uuid":
 		return r.UUID
 	default:
-		return r.GPUId
+		return r.GPUID
 	}
 }
 
@@ -183,7 +193,7 @@ func (p *Publisher) Publish(ctx context.Context, reading telemetry.Reading) erro
 	msg := readingToProto(reading)
 	payload, err := proto.Marshal(msg)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal telemetry proto: %w", err)
 	}
 
 	req := &mqv1.PublishRequest{
@@ -198,11 +208,11 @@ func (p *Publisher) Publish(ctx context.Context, reading telemetry.Reading) erro
 			switch st.Code() {
 			case codes.ResourceExhausted, codes.Unavailable, codes.Aborted, codes.DeadlineExceeded:
 				p.signalPressure()
-				return ErrRejectedByQueue
+				return fmt.Errorf("%w: %v", ErrRejectedByQueue, err)
 			}
 		}
 		p.signalPressure()
-		return err
+		return fmt.Errorf("publish to mq: %w", err)
 	}
 
 	p.recordEnqueueSuccess()
@@ -224,8 +234,7 @@ func (p *Publisher) recordEnqueueSuccess() {
 }
 
 // Health implements outbound.QueueMonitor using a local virtual queue depth (MQ API has no Health RPC).
-func (p *Publisher) Health(ctx context.Context) outbound.QueueHealth {
-	_ = ctx
+func (p *Publisher) Health(_ context.Context) outbound.QueueHealth {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	capacity := p.capacity

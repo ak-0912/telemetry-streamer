@@ -1,16 +1,20 @@
 package telemetry
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
+// ErrInvalidReading is returned when a Reading fails domain validation.
 var ErrInvalidReading = errors.New("invalid telemetry reading")
 
-// ValidateReading keeps core business rules in the domain layer.
+// ValidateReading enforces core business rules: every reading must identify the GPU and the metric.
 func ValidateReading(r Reading) error {
-	if r.GPUId == "" {
-		return ErrInvalidReading
+	if r.GPUID == "" {
+		return fmt.Errorf("%w: GPUID is required", ErrInvalidReading)
 	}
 	if r.MetricName == "" {
-		return ErrInvalidReading
+		return fmt.Errorf("%w: MetricName is required", ErrInvalidReading)
 	}
 	return nil
 }

@@ -3,7 +3,7 @@ package infrastructure
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -42,7 +42,7 @@ func runProbeServer(lc fx.Lifecycle, cfg config.Config) {
 			ready.Store(true)
 			go func() {
 				if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-					log.Printf("probe server stopped with error: %v", err)
+					slog.Error("probe server stopped", "err", err)
 				}
 			}()
 			return nil

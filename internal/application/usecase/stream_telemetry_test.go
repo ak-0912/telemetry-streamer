@@ -70,7 +70,7 @@ func TestHandleValidatesBeforePublish(t *testing.T) {
 
 	err = uc.Handle(context.Background(), telemetry.Reading{
 		MetricName: "metric",
-		GPUId:      "0",
+		GPUID:      "0",
 	})
 	if err != nil {
 		t.Fatalf("unexpected handle error: %v", err)
@@ -82,7 +82,7 @@ func TestHandleValidatesBeforePublish(t *testing.T) {
 	pub.called = false
 	err = uc.Handle(context.Background(), telemetry.Reading{
 		MetricName: "",
-		GPUId:      "0",
+		GPUID:      "0",
 	})
 	if err == nil {
 		t.Fatal("expected validation error")

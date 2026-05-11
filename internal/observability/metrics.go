@@ -1,3 +1,5 @@
+// Package observability provides lightweight, lock-free application metrics
+// exposed via a Prometheus-compatible /metrics text endpoint.
 package observability
 
 import (
@@ -17,26 +19,34 @@ type streamMetrics struct {
 
 var metrics streamMetrics
 
+// IncPublished increments the counter of successfully published messages (telemetry_published_total).
 func IncPublished() {
 	metrics.publishedTotal.Add(1)
 }
 
+// IncPublishError increments the counter of failed publish attempts (telemetry_publish_errors_total).
 func IncPublishError() {
 	metrics.publishErrorTotal.Add(1)
 }
 
+// IncValidationError increments the counter of readings rejected by domain validation (telemetry_validation_errors_total).
 func IncValidationError() {
 	metrics.validationErrorTotal.Add(1)
 }
 
+// IncReaderError increments the counter of reader-level errors (telemetry_reader_errors_total).
 func IncReaderError() {
 	metrics.readerErrorTotal.Add(1)
 }
 
+// ObservePublishLatencyNanos records the latest publish round-trip latency in nanoseconds
+// (exposed as telemetry_last_publish_latency_seconds after conversion).
 func ObservePublishLatencyNanos(v int64) {
 	metrics.lastPublishLatencyNano.Store(v)
 }
 
+// ObserveQueueUtilization stores the latest queue utilization ratio (0.0–1.0)
+// (exposed as telemetry_queue_utilization_ratio).
 func ObserveQueueUtilization(utilization float64) {
 	if utilization < 0 {
 		utilization = 0
@@ -45,6 +55,7 @@ func ObserveQueueUtilization(utilization float64) {
 	metrics.queueUtilizationMilli.Store(milli)
 }
 
+// MetricsHandler returns an http.Handler that serves Prometheus text-format metrics at /metrics.
 func MetricsHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")

@@ -4,26 +4,37 @@ package mq.v1;
 
 option go_package = "telemetry-streamer/api/mq/v1;mqv1";
 
+// MessageQueueService is a minimal Kafka-like message queue API.
+// Producers call Publish; consumers use JoinGroup/Fetch/CommitOffset for
+// coordinated, partition-aware consumption.
 service MessageQueueService {
+  // Publish appends a single message to the given topic, keyed for partitioning.
   rpc Publish(PublishRequest) returns (PublishResponse);
+  // PublishBatch atomically appends multiple messages.
   rpc PublishBatch(PublishBatchReq) returns (PublishBatchResp);
+  // Fetch retrieves up to max messages from a partition starting at offset.
   rpc Fetch(FetchRequest) returns (FetchResponse);
+  // CommitOffset persists the consumer group's progress on a partition.
   rpc CommitOffset(CommitRequest) returns (CommitResponse);
+  // JoinGroup registers a consumer in a group, triggering rebalance if needed.
   rpc JoinGroup(JoinRequest) returns (JoinResponse);
+  // Heartbeat keeps the consumer's membership alive; server signals rebalance via rebalance_needed.
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  // GetAssignment returns the partitions assigned to this consumer after a rebalance.
   rpc GetAssignment(AssignRequest) returns (AssignResponse);
+  // LeaveGroup removes the consumer from the group, triggering rebalance for others.
   rpc LeaveGroup(LeaveRequest) returns (LeaveResponse);
 }
 
 message PublishRequest {
-  string topic = 1;
-  string key = 2;
-  bytes payload = 3;
+  string topic = 1;   // Target topic name.
+  string key = 2;     // Partition key (determines which partition receives the message).
+  bytes payload = 3;  // Opaque message body (typically proto-encoded TelemetryMessage).
 }
 
 message PublishResponse {
-  int32 partition = 1;
-  int64 offset = 2;
+  int32 partition = 1; // Partition the message was written to.
+  int64 offset = 2;   // Offset within that partition.
 }
 
 message PublishBatchReq {
@@ -35,11 +46,11 @@ message PublishBatchResp {
 }
 
 message FetchRequest {
-  string group = 1;
-  string topic = 2;
-  int32 partition = 3;
-  int64 offset = 4;
-  int32 max = 5;
+  string group = 1;     // Consumer group name.
+  string topic = 2;     // Topic to fetch from.
+  int32 partition = 3;  // Partition index.
+  int64 offset = 4;     // Start offset (inclusive).
+  int32 max = 5;        // Maximum number of messages to return.
 }
 
 message FetchResponse {
@@ -47,18 +58,18 @@ message FetchResponse {
 }
 
 message Message {
-  int32 partition = 1;
-  int64 offset = 2;
-  string key = 3;
-  bytes payload = 4;
-  int64 published_at = 5;
+  int32 partition = 1;     // Partition the message belongs to.
+  int64 offset = 2;        // Offset within the partition.
+  string key = 3;          // Original partition key.
+  bytes payload = 4;       // Opaque message body.
+  int64 published_at = 5;  // Server-assigned publish time (Unix nanoseconds).
 }
 
 message CommitRequest {
-  string group = 1;
-  string topic = 2;
-  int32 partition = 3;
-  int64 offset = 4;
+  string group = 1;     // Consumer group.
+  string topic = 2;     // Topic.
+  int32 partition = 3;  // Partition.
+  int64 offset = 4;     // Next offset to consume (exclusive commit).
 }
 
 message CommitResponse {
@@ -66,13 +77,13 @@ message CommitResponse {
 }
 
 message JoinRequest {
-  string group = 1;
-  string topic = 2;
-  string member_id = 3;
+  string group = 1;      // Consumer group to join.
+  string topic = 2;      // Topic the group consumes.
+  string member_id = 3;  // Unique member identifier.
 }
 
 message JoinResponse {
-  string generation_id = 1;
+  string generation_id = 1; // Current group generation after join/rebalance.
 }
 
 message HeartbeatRequest {
@@ -82,7 +93,7 @@ message HeartbeatRequest {
 }
 
 message HeartbeatResponse {
-  bool rebalance_needed = 1;
+  bool rebalance_needed = 1; // True if the consumer should re-fetch assignments.
 }
 
 message AssignRequest {
@@ -96,8 +107,8 @@ message AssignResponse {
 }
 
 message PartitionAssignment {
-  int32 partition = 1;
-  int64 start_offset = 2;
+  int32 partition = 1;     // Assigned partition index.
+  int64 start_offset = 2;  // Committed offset to resume from.
 }
 
 message LeaveRequest {

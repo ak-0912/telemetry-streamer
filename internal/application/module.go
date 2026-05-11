@@ -1,8 +1,10 @@
+// Package application assembles use-case providers and lifecycle hooks for
+// the Fx application container.
 package application
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 
 	"go.uber.org/fx"
@@ -35,7 +37,7 @@ func runStreamer(lc fx.Lifecycle, shutdowner fx.Shutdowner, uc *usecase.StreamTe
 			go func() {
 				defer wg.Done()
 				if err := uc.Stream(runCtx); err != nil {
-					log.Printf("streamer stopped with error: %v", err)
+					slog.Error("streamer stopped with error", "err", err)
 					_ = shutdowner.Shutdown()
 				}
 			}()
@@ -49,6 +51,7 @@ func runStreamer(lc fx.Lifecycle, shutdowner fx.Shutdowner, uc *usecase.StreamTe
 	})
 }
 
+// Module provides the StreamTelemetry use case and starts the streaming lifecycle hook.
 var Module = fx.Options(
 	fx.Provide(provideStreamTelemetryUseCase),
 	fx.Invoke(runStreamer),

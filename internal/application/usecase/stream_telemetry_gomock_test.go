@@ -27,7 +27,7 @@ func TestRunWorkerPublishSuccessRecoversBackoff(t *testing.T) {
 
 	readings := make(chan telemetry.Reading, 1)
 	errs := make(chan error)
-	readings <- telemetry.Reading{MetricName: "gpu.util", GPUId: "0"}
+	readings <- telemetry.Reading{MetricName: "gpu.util", GPUID: "0"}
 	close(readings)
 	close(errs)
 
@@ -60,7 +60,7 @@ func TestRunWorkerPublishFailureAppliesBackoff(t *testing.T) {
 
 	readings := make(chan telemetry.Reading, 1)
 	errs := make(chan error)
-	readings <- telemetry.Reading{MetricName: "gpu.util", GPUId: "0"}
+	readings <- telemetry.Reading{MetricName: "gpu.util", GPUID: "0"}
 	close(readings)
 	close(errs)
 

@@ -1,0 +1,16 @@
+# PersistentVolumeClaim for telemetry CSV (used when Helm csv.enabled=true and csv.existingPvc=telemetry-csv-pvc).
+# Apply before the helper pod and before helm install with CSV PVC mode.
+#
+# If nothing binds, set storageClassName to a StorageClass in your cluster (kubectl get storageclass).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: telemetry-csv-pvc
+  labels:
+    app.kubernetes.io/name: telemetry-streamer
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
